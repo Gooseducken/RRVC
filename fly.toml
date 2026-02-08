@@ -1,0 +1,18 @@
+# fly.toml
+app = "your-roblox-voice-chat" # Замените на уникальное имя
+
+[[vm]]
+size = "shared-cpu-1x"  # Начальный размер виртуальной машины[citation:9]
+memory = "1gb"           # Начальный объём оперативной памяти[citation:9]
+
+[[services]]
+  internal_port = 8080 # Порт, на котором работает ваше приложение FastAPI
+  protocol = "tcp"
+
+  [[services.ports]]
+    port = 443
+    handlers = ["tls", "http"] # Fly.io автоматически обработает TLS[citation:7]
+  [[services.ports]]
+    port = 80
+    handlers = ["http"]
+    force_https = true # Автоматически перенаправлять HTTP на HTTPS[citation:7]
