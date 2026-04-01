@@ -21,7 +21,7 @@ app.add_middleware(
 )
 
 # Читаем ключ OpenAI из переменных окружения Render
-OPENAI_API_KEY = os.getenv("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", "")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "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")
 
 # --- Модели данных (Схемы) ---
 class VoiceMessage(BaseModel):
