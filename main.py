@@ -11,6 +11,8 @@ import httpx  # Добавили для асинхронных запросов 
 
 app = FastAPI(title="Roblox Voice Chat & Moderation Server")
 
+BAD_WORDS_RU = ["хуй", "пизд", "бля", "сука", "ебал", "пидор", "гандон", "уеб", "шлюх", "залуп"]
+
 # Разрешаем запросы из Roblox Studio и игр
 app.add_middleware(
     CORSMiddleware,
@@ -72,42 +74,55 @@ async def root():
 @app.post("/api/moderate")
 async def moderate_text(request: ModerationRequest):
     """
-    Прокси-метод для проверки текста через OpenAI Moderation API.
+    Прокси-метод для проверки текста через OpenAI Moderation API 
+    с автоматическим откатом на локальный словарь.
     """
-    if not OPENAI_API_KEY:
-        print("[MODERATION ERROR] API ключ OpenAI не задан в переменных окружения!")
-        raise HTTPException(status_code=500, detail="На сервере не настроен API ключ OpenAI")
+    # 1. Сначала ВСЕГДА проверяем по нашему локальному словарю (это бесплатно и мгновенно)
+    text_lower = request.text.lower()
+    for bad_word in BAD_WORDS_RU:
+        if bad_word in text_lower:
+            print(f"[MODERATION] Текст заблокирован локальным словарем: {request.text}")
+            return {
+                "status": "success",
+                "flagged": True,
+                "categories": {"custom_dict": True}
+            }
 
-    url = "https://api.openai.com/v1/moderations"
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {OPENAI_API_KEY}"
-    }
-    data = {
-        "input": request.text
-    }
+    # 2. Если локальный фильтр пропустил, пытаемся спросить ИИ OpenAI
+    if OPENAI_API_KEY:
+        url = "https://api.openai.com/v1/moderations"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {OPENAI_API_KEY}"
+        }
+        data = {"input": request.text}
 
-    try:
-        # Делаем асинхронный запрос к серверам OpenAI
-        async with httpx.AsyncClient() as client:
-            response = await client.post(url, json=data, headers=headers, timeout=10.0)
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(url, json=data, headers=headers, timeout=5.0)
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    if "results" in result and len(result["results"]) > 0:
+                        return {
+                            "status": "success",
+                            "flagged": result["results"][0]["flagged"],
+                            "categories": result["results"][0]["categories"]
+                        }
+                else:
+                    print(f"[MODERATION WARNING] OpenAI вернул {response.status_code}. Используем только локальный фильтр.")
+                    
+        except Exception as exc:
+            print(f"[MODERATION WARNING] Ошибка сети с OpenAI: {exc}. Используем только локальный фильтр.")
+    
+    # Если OpenAI не настроен или выдал ошибку, но локальный фильтр ничего не нашел:
+    return {
+        "status": "success",
+        "flagged": False,
+        "categories": {}
+    }
             
-            if response.status_code != 200:
-                print(f"[MODERATION ERROR] OpenAI вернул код {response.status_code}: {response.text}")
-                raise HTTPException(status_code=response.status_code, detail="Ошибка при запросе к OpenAI")
-            
-            result = response.json()
-            
-            # Извлекаем результат проверки
-            if "results" in result and len(result["results"]) > 0:
-                is_flagged = result["results"][0]["flagged"]
-                return {
-                    "status": "success",
-                    "flagged": is_flagged,  # true если текст нарушает правила
-                    "categories": result["results"][0]["categories"]
-                }
-            
-            raise HTTPException(status_code=500, detail="Неверный формат ответа от OpenAI")
+    raise HTTPException(status_code=500, detail="Неверный формат ответа от OpenAI")
 
     except httpx.RequestError as exc:
         print(f"[MODERATION ERROR] Ошибка сети при запросе к OpenAI: {exc}")
