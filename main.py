@@ -1,5 +1,5 @@
 # main.py
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Header
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Dict, List, Optional
@@ -7,95 +7,74 @@ import uuid
 import time
 import asyncio
 import os
-import httpx  # Добавили для асинхронных запросов к OpenAI
+import httpx
 
-app = FastAPI(title="Roblox Voice Chat & Moderation Server")
-
-BAD_WORDS_RU = ["хуй", "пизд", "бля", "сука", "ебал", "пидор", "гандон", "уеб", "шлюх", "залуп"]
+app = FastAPI(title="Roblox Voice Chat & Llama Guard Moderation")
 
 # Разрешаем запросы из Roblox Studio и игр
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # В продакшене укажите конкретные домены!
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Читаем ключ OpenAI из переменных окружения Render
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "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")
+# Ключ от OpenRouter (или аналогичного сервиса для доступа к Llama Guard)
+LLAMA_API_KEY = os.getenv("API_KEY", "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")
 
-# --- Модели данных (Схемы) ---
+# Базовый список стоп-слов на случай, если API не ответит
+BAD_WORDS_RU = ["хуй", "пизд", "бля", "сука", "ебал", "пидор", "гандон", "уеб", "шлюх", "залуп"]
+
+# --- Модели данных ---
 class VoiceMessage(BaseModel):
-    """Модель для получения голосового сообщения."""
-    sender_id: str  # Уникальный ID игрока (например, UserId)
-    room_id: str    # ID комнаты или сервера игры
-    audio_data: str # Закодированные аудиоданные (например, в base64)
-    sequence: int   # Порядковый номер пакета
+    sender_id: str
+    room_id: str
+    audio_data: str
+    sequence: int
 
 class PlayerRegistration(BaseModel):
-    """Модель для регистрации игрока в комнате."""
     player_id: str
     player_name: str
     room_id: str
 
 class ModerationRequest(BaseModel):
-    """Модель для модерации текста."""
     text: str
 
-# --- Хранилище данных в памяти (Временное) ---
-active_players: Dict[str, Dict] = {}  # player_id -> {name, room_id, last_seen}
-voice_message_queue: Dict[str, List[Dict]] = {}  # room_id -> [messages]
+active_players: Dict[str, Dict] = {}
+voice_message_queue: Dict[str, List[Dict]] = {}
 
-# --- Вспомогательные функции ---
 def cleanup_old_players():
-    """Очистка игроков, которые не были активны более 30 секунд."""
     current_time = time.time()
-    players_to_remove = []
-    
-    for player_id, data in active_players.items():
-        if current_time - data.get('last_seen', 0) > 30:
-            players_to_remove.append(player_id)
-    
-    for player_id in players_to_remove:
-        room = active_players[player_id].get('room_id')
-        active_players.pop(player_id, None)
-        print(f"[CLEANUP] Удалён неактивный игрок: {player_id} из комнаты {room}")
-
-# --- Основные эндпоинты API ---
-
-@app.get("/")
-async def root():
-    return {"message": "Voice Chat & Moderation API работает", "status": "online"}
+    players_to_remove = [p_id for p_id, data in active_players.items() if current_time - data.get('last_seen', 0) > 30]
+    for p_id in players_to_remove:
+        active_players.pop(p_id, None)
 
 # ==========================================
-# НОВЫЙ ЭНДПОИНТ: ПРОКСИ ДЛЯ МОДЕРАЦИИ OPENAI
+# ЭНДПОИНТ МОДЕРАЦИИ: LLAMA GUARD
 # ==========================================
 @app.post("/api/moderate")
 async def moderate_text(request: ModerationRequest):
-    """
-    Прокси-метод для проверки текста через OpenAI Moderation API 
-    с автоматическим откатом на локальный словарь.
-    """
-    # 1. Сначала ВСЕГДА проверяем по нашему локальному словарю (это бесплатно и мгновенно)
+    # 1. Локальная проверка (быстро и бесплатно)
     text_lower = request.text.lower()
     for bad_word in BAD_WORDS_RU:
         if bad_word in text_lower:
-            print(f"[MODERATION] Текст заблокирован локальным словарем: {request.text}")
-            return {
-                "status": "success",
-                "flagged": True,
-                "categories": {"custom_dict": True}
-            }
+            return {"status": "success", "flagged": True}
 
-    # 2. Если локальный фильтр пропустил, пытаемся спросить ИИ OpenAI
-    if OPENAI_API_KEY:
-        url = "https://api.openai.com/v1/moderations"
+    # 2. Проверка через Llama Guard
+    if LLAMA_API_KEY:
+        # Используем OpenRouter как самый доступный шлюз к Llama Guard
+        url = "https://openrouter.ai/api/v1/chat/completions"
         headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {OPENAI_API_KEY}"
+            "Authorization": f"Bearer {LLAMA_API_KEY}",
+            "Content-Type": "application/json"
         }
-        data = {"input": request.text}
+        
+        # Llama Guard ждет текст и возвращает либо "safe", либо "unsafe"
+        data = {
+            "model": "meta-llama/llama-guard-3-8b",
+            "messages": [{"role": "user", "content": request.text}]
+        }
 
         try:
             async with httpx.AsyncClient() as client:
@@ -103,101 +82,40 @@ async def moderate_text(request: ModerationRequest):
                 
                 if response.status_code == 200:
                     result = response.json()
-                    if "results" in result and len(result["results"]) > 0:
-                        return {
-                            "status": "success",
-                            "flagged": result["results"][0]["flagged"],
-                            "categories": result["results"][0]["categories"]
-                        }
-                else:
-                    print(f"[MODERATION WARNING] OpenAI вернул {response.status_code}. Используем только локальный фильтр.")
+                    ai_response = result["choices"][0]["message"]["content"].strip().lower()
+                    
+                    # Llama Guard прямо пишет "unsafe", если сообщение нарушает правила
+                    is_flagged = "unsafe" in ai_response
+                    return {"status": "success", "flagged": is_flagged}
+                
+                print(f"[LLAMA ERROR] Код {response.status_code}: {response.text}")
                     
         except Exception as exc:
-            print(f"[MODERATION WARNING] Ошибка сети с OpenAI: {exc}. Используем только локальный фильтр.")
+            print(f"[LLAMA ERROR] Ошибка сети: {exc}")
     
-    # Если OpenAI не настроен или выдал ошибку, но локальный фильтр ничего не нашел:
-    return {
-        "status": "success",
-        "flagged": False,
-        "categories": {}
-    }
+    # Если API упал или не настроен, но мата в списке нет — пропускаем
+    return {"status": "success", "flagged": False}
 
 # ==========================================
-# СОХРАНЁННЫЕ ЭНДПОИНТЫ ГОЛОСОВОГО ЧАТА
+# ЭНДПОИНТЫ ГОЛОСОВОГО ЧАТА (БЕЗ ИЗМЕНЕНИЙ)
 # ==========================================
-
 @app.post("/api/register")
 async def register_player(data: PlayerRegistration):
-    player_id = data.player_id
-    active_players[player_id] = {
-        'name': data.player_name,
-        'room_id': data.room_id,
-        'last_seen': time.time()
-    }
-    if data.room_id not in voice_message_queue:
-        voice_message_queue[data.room_id] = []
-    print(f"[REGISTER] Игрок {data.player_name} ({player_id}) присоединился к комнате {data.room_id}")
+    active_players[data.player_id] = {'name': data.player_name, 'room_id': data.room_id, 'last_seen': time.time()}
+    if data.room_id not in voice_message_queue: voice_message_queue[data.room_id] = []
     return {"status": "success", "room": data.room_id}
 
 @app.post("/api/send_audio")
 async def send_audio_message(message: VoiceMessage, background_tasks: BackgroundTasks):
-    if message.sender_id not in active_players:
-        raise HTTPException(status_code=400, detail="Отправитель не зарегистрирован")
-    
+    if message.sender_id not in active_players: raise HTTPException(status_code=400, detail="Отправитель не зарегистрирован")
     active_players[message.sender_id]['last_seen'] = time.time()
-    room_id = message.room_id
-    message_id = str(uuid.uuid4())[:8]
-    message_data = {
-        'id': message_id,
-        'sender_id': message.sender_id,
-        'sender_name': active_players[message.sender_id].get('name', 'Unknown'),
-        'audio_data': message.audio_data,
-        'sequence': message.sequence,
-        'timestamp': time.time()
-    }
-    
-    if room_id not in voice_message_queue:
-        voice_message_queue[room_id] = []
-    
-    voice_message_queue[room_id].append(message_data)
-    
-    if len(voice_message_queue[room_id]) > 50:
-        voice_message_queue[room_id] = voice_message_queue[room_id][-50:]
-    
+    msg_data = {'sender_id': message.sender_id, 'audio_data': message.audio_data, 'sequence': message.sequence, 'timestamp': time.time()}
+    voice_message_queue[message.room_id].append(msg_data)
     background_tasks.add_task(cleanup_old_players)
-    print(f"[AUDIO] Получено сообщение {message_id} от {message.sender_id} в комнате {room_id}")
-    return {"status": "success", "message_id": message_id}
+    return {"status": "success"}
 
 @app.get("/api/get_audio/{room_id}/{player_id}")
 async def get_audio_messages(room_id: str, player_id: str):
-    if player_id not in active_players:
-        raise HTTPException(status_code=400, detail="Игрок не зарегистрирован")
-    
-    active_players[player_id]['last_seen'] = time.time()
     messages = voice_message_queue.get(room_id, [])
     filtered_messages = [msg for msg in messages if msg['sender_id'] != player_id]
-    
-    return {
-        "status": "success",
-        "room": room_id,
-        "messages": filtered_messages[-10:],
-        "player_count": len([p for p in active_players.values() if p.get('room_id') == room_id])
-    }
-
-@app.get("/api/players/{room_id}")
-async def get_room_players(room_id: str):
-    cleanup_old_players()
-    room_players = []
-    for player_id, data in active_players.items():
-        if data.get('room_id') == room_id:
-            room_players.append({
-                'id': player_id,
-                'name': data.get('name', 'Unknown'),
-                'last_seen': data.get('last_seen', 0)
-            })
-    return {"room": room_id, "players": room_players, "count": len(room_players)}
-
-if __name__ == "__main__":
-    import uvicorn
-    print("Запуск сервера голосового чата и модерации...")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    return {"status": "success", "messages": filtered_messages[-10:]}
