@@ -72,7 +72,7 @@ async def moderate_text(request: ModerationRequest):
         
         # Llama Guard ждет текст и возвращает либо "safe", либо "unsafe"
         data = {
-            "model": "meta-llama/llama-guard-3-8b",
+            "model": "meta-llama/llama-guard-2-8b",
             "messages": [{"role": "user", "content": request.text}]
         }
 
