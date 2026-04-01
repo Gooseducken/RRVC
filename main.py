@@ -121,12 +121,6 @@ async def moderate_text(request: ModerationRequest):
         "flagged": False,
         "categories": {}
     }
-            
-    raise HTTPException(status_code=500, detail="Неверный формат ответа от OpenAI")
-
-    except httpx.RequestError as exc:
-        print(f"[MODERATION ERROR] Ошибка сети при запросе к OpenAI: {exc}")
-        raise HTTPException(status_code=500, detail="Ошибка соединения с сервером OpenAI")
 
 # ==========================================
 # СОХРАНЁННЫЕ ЭНДПОИНТЫ ГОЛОСОВОГО ЧАТА
